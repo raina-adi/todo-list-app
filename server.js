@@ -8,9 +8,9 @@ const app = express();
 // Create a connection to the database using mysql2
 const db = mysql.createConnection({
   host: 'localhost',
-  user: 'root', // Replace with your MySQL username
-  password: 'Raina@123', // Replace with your MySQL password
-  database: 'registration_db' // Replace with your actual database name
+  user: 'root', // Your MySQL username
+  password: 'Raina@123', // Your MySQL password
+  database: 'registration_db' // Your database name
 });
 
 // Connect to the database
@@ -25,22 +25,22 @@ db.connect((err) => {
 // Middleware to parse JSON request bodies
 app.use(bodyParser.json());
 
-// Authentication middleware to verify the JWT token
-const authenticateToken = (req, res, next) => {
-  const token = req.header('Authorization')?.split(' ')[1]; // Get token from Authorization header
+// Middleware to authenticate the token and set req.user
+function authenticateToken(req, res, next) {
+  const token = req.header('Authorization')?.split(' ')[1]; // Extract token from the header
 
   if (!token) {
     return res.status(401).json({ message: 'Token is required' });
   }
 
-  jwt.verify(token, 'your_jwt_secret_key', (err, user) => {
+  jwt.verify(token, 'your_jwt_secret', (err, user) => {
     if (err) {
-      return res.status(403).json({ message: 'Invalid or expired token' });
+      return res.status(403).json({ message: 'Invalid token' });
     }
-    req.user = user; // Attach user info to request object
-    next(); // Proceed to the next middleware or route handler
+    req.user = user; // Store user data in req.user
+    next(); // Proceed to the next middleware/route handler
   });
-};
+}
 
 // 1. **User Registration**
 app.post('/register', (req, res) => {
@@ -69,12 +69,18 @@ app.post('/login', (req, res) => {
       return res.status(500).json({ message: 'Database error', error: err });
     }
 
-    if (result.length === 0 || result[0].password !== password) {
+    if (result.length === 0) {
+      return res.status(401).json({ message: 'Incorrect credentials!' });
+    }
+
+    // Compare the password (no hashing in this case, just direct comparison)
+    if (result[0].password !== password) {
       return res.status(401).json({ message: 'Incorrect credentials!' });
     }
 
     // Generate JWT token
-    const token = jwt.sign({ id: result[0].id, email: result[0].email }, 'your_jwt_secret_key', { expiresIn: '1h' });
+    const user = { id: result[0].id, email: result[0].email };
+    const token = jwt.sign(user, 'your_jwt_secret', { expiresIn: '1h' });
 
     return res.status(200).json({ message: 'Login successful!', token });
   });
@@ -83,14 +89,14 @@ app.post('/login', (req, res) => {
 // 3. **Add a To-Do Item**
 app.post('/add-todo', authenticateToken, (req, res) => {
   const { title, description } = req.body;
-  const userId = req.user.id; // Access user ID from the JWT payload
+  const userId = req.user.id; // Get the user ID from the JWT token
 
   if (!title || !description) {
     return res.status(400).json({ message: 'Title and description are required' });
   }
 
-  const insertTodoQuery = 'INSERT INTO todo (user_id, title, description) VALUES (?, ?, ?)';
-  db.query(insertTodoQuery, [userId, title, description], (err, result) => {
+  const insertTodoQuery = 'INSERT INTO todo (user_id, title, description, created_by) VALUES (?, ?, ?, ?)';
+  db.query(insertTodoQuery, [userId, title, description, userId], (err, result) => {
     if (err) {
       return res.status(500).json({ message: 'Error adding to-do item', error: err });
     }
@@ -98,11 +104,11 @@ app.post('/add-todo', authenticateToken, (req, res) => {
   });
 });
 
-// 4. **Get All To-Do Items for a User**
+// 4. **Get All To-Do Items for the Logged-In User**
 app.get('/todos', authenticateToken, (req, res) => {
-  const userId = req.user.id;
+  const userId = req.user.id; // Get the user ID from the JWT token
 
-  const selectQuery = 'SELECT * FROM todo WHERE user_id = ?';
+  const selectQuery = 'SELECT * FROM todo WHERE created_by = ?';
   db.query(selectQuery, [userId], (err, result) => {
     if (err) {
       return res.status(500).json({ message: 'Error fetching to-do items', error: err });
@@ -115,18 +121,19 @@ app.get('/todos', authenticateToken, (req, res) => {
 app.put('/update-todo/:id', authenticateToken, (req, res) => {
   const todoId = req.params.id;
   const { title, description } = req.body;
+  const userId = req.user.id; // Get the user ID from the JWT token
 
   if (!title || !description) {
     return res.status(400).json({ message: 'Title and description are required' });
   }
 
-  const updateQuery = 'UPDATE todo SET title = ?, description = ? WHERE id = ? AND user_id = ?';
-  db.query(updateQuery, [title, description, todoId, req.user.id], (err, result) => {
+  const updateQuery = 'UPDATE todo SET title = ?, description = ? WHERE id = ? AND created_by = ?';
+  db.query(updateQuery, [title, description, todoId, userId], (err, result) => {
     if (err) {
       return res.status(500).json({ message: 'Error updating to-do item', error: err });
     }
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'To-do item not found or not owned by the user' });
+      return res.status(404).json({ message: 'To-do item not found or you do not have permission to update it' });
     }
     return res.status(200).json({ message: 'To-do item updated successfully' });
   });
@@ -135,14 +142,15 @@ app.put('/update-todo/:id', authenticateToken, (req, res) => {
 // 6. **Delete a To-Do Item**
 app.delete('/delete-todo/:id', authenticateToken, (req, res) => {
   const todoId = req.params.id;
+  const userId = req.user.id; // Get the user ID from the JWT token
 
-  const deleteQuery = 'DELETE FROM todo WHERE id = ? AND user_id = ?';
-  db.query(deleteQuery, [todoId, req.user.id], (err, result) => {
+  const deleteQuery = 'DELETE FROM todo WHERE id = ? AND created_by = ?';
+  db.query(deleteQuery, [todoId, userId], (err, result) => {
     if (err) {
       return res.status(500).json({ message: 'Error deleting to-do item', error: err });
     }
     if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'To-do item not found or not owned by the user' });
+      return res.status(404).json({ message: 'To-do item not found or you do not have permission to delete it' });
     }
     return res.status(200).json({ message: 'To-do item deleted successfully' });
   });
